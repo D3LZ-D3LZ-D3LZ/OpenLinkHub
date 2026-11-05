@@ -37,6 +37,7 @@ type ExternalHubData struct {
 	PortId                  byte
 	ExternalHubDeviceType   int
 	ExternalHubDeviceAmount int
+	CustomLedCount          int `json:",omitempty"`
 }
 
 type DeviceProfile struct {
@@ -93,6 +94,7 @@ type Device struct {
 	rgbMutex                sync.RWMutex
 	Exit                    bool
 	mutex                   sync.Mutex
+	writeMutex              sync.Mutex
 	autoRefreshChan         chan struct{}
 	timer                   *time.Ticker
 	State                   map[byte]bool
@@ -117,6 +119,7 @@ var (
 	readBufferSize          = 17
 	maxBufferSizePerRequest = 50
 	maximumLedAmount        = 204
+	customLedDeviceIndex    = 999
 	deviceUpdateDelay       = 5
 	rgbProfileUpgrade       = []string{"gradient", "pastelrainbow", "pastelspiralrainbow"}
 	rgbModes                = []string{
@@ -149,6 +152,7 @@ var (
 		6: {0x09, 0x01, 0x01, 0x01, 0x00, 0x00},
 		7: {0x08, 0x01, 0x00, 0x01, 0x00, 0x00},
 		8: {0x06, 0x01, 0x01, 0x01, 0x00, 0x00},
+		9: {0x04, 0x01, 0x01, 0x00, 0x00, 0x00}, // Static with black color = off
 	}
 )
 
@@ -199,6 +203,7 @@ func Init(vendorId, productId uint16, serial, _ string) *common.Device {
 			6: "Sequential",
 			7: "Strobing",
 			8: "Visor",
+			9: "Off",
 		},
 		RGBModes: rgbModes,
 	}
@@ -349,6 +354,11 @@ func (d *Device) StopDirty() uint8 {
 
 // loadExternalDevices will load external device definitions
 func (d *Device) loadExternalDevices() {
+	// Custom device type, LED count is set per port via CustomLedCount
+	defer func() {
+		d.ExternalLedDevice = append(d.ExternalLedDevice, ExternalLedDevice{Index: customLedDeviceIndex, Name: "Custom (set LED count)"})
+	}()
+
 	externalDevicesFile := pwd + "/database/external/lnpro.json"
 	if common.FileExists(externalDevicesFile) {
 		file, err := os.Open(externalDevicesFile)
@@ -716,7 +726,7 @@ func (d *Device) getDevices() int {
 			externalHub := d.DeviceProfile.ExternalHubs[i]
 			externalDeviceType := d.getExternalLedDevice(externalHub.ExternalHubDeviceType)
 			if externalDeviceType != nil {
-				LedChannels = uint8(externalDeviceType.Total)
+				LedChannels = uint8(d.getHubLedCount(externalHub, externalDeviceType))
 				for z := 0; z < externalHub.ExternalHubDeviceAmount; z++ {
 					rgbProfile := "static"
 					label := "Set Label"
@@ -757,6 +767,14 @@ func (d *Device) getDevices() int {
 
 	d.Devices = devices
 	return len(devices)
+}
+
+// getHubLedCount will return LED count per device on an external hub, honoring custom LED count
+func (d *Device) getHubLedCount(externalHub *ExternalHubData, externalDeviceType *ExternalLedDevice) int {
+	if externalDeviceType.Index == customLedDeviceIndex {
+		return externalHub.CustomLedCount
+	}
+	return externalDeviceType.Total
 }
 
 // getExternalLedDevice will return ExternalLedDevice based on given device index
@@ -1159,7 +1177,7 @@ func (d *Device) UpdateExternalHubDeviceAmount(portId, externalDevices int) uint
 			for i := 0; i < len(d.DeviceProfile.ExternalHubs); i++ {
 				externalHub := d.DeviceProfile.ExternalHubs[i]
 				if deviceType := d.getExternalLedDevice(externalHub.ExternalHubDeviceType); deviceType != nil {
-					lightChannels += deviceType.Total * externalHub.ExternalHubDeviceAmount
+					lightChannels += d.getHubLedCount(externalHub, deviceType) * externalHub.ExternalHubDeviceAmount
 				}
 			}
 			if lightChannels > maximumLedAmount {
@@ -1179,6 +1197,40 @@ func (d *Device) UpdateExternalHubDeviceAmount(portId, externalDevices int) uint
 		}
 	}
 	return 0
+}
+
+// UpdateExternalHubCustomLedCount will update LED count of a custom device connected to an external-LED hub
+func (d *Device) UpdateExternalHubCustomLedCount(portId, customLedCount int) uint8 {
+	if d.DeviceProfile == nil {
+		return 0
+	}
+	if _, ok := d.DeviceProfile.ExternalHubs[portId]; !ok {
+		return 0
+	}
+
+	currentCount := d.DeviceProfile.ExternalHubs[portId].CustomLedCount
+	d.DeviceProfile.ExternalHubs[portId].CustomLedCount = customLedCount
+
+	// Validate the maximum number of LED channels
+	lightChannels := 0
+	for i := 0; i < len(d.DeviceProfile.ExternalHubs); i++ {
+		externalHub := d.DeviceProfile.ExternalHubs[i]
+		if deviceType := d.getExternalLedDevice(externalHub.ExternalHubDeviceType); deviceType != nil {
+			lightChannels += d.getHubLedCount(externalHub, deviceType) * externalHub.ExternalHubDeviceAmount
+		}
+	}
+	if lightChannels > maximumLedAmount {
+		d.DeviceProfile.ExternalHubs[portId].CustomLedCount = currentCount
+		logger.Log(logger.Fields{"serial": d.Serial, "portId": portId}).Info("You have exceeded maximum amount of supported LED channels.")
+		return 2
+	}
+
+	if d.activeRgb != nil {
+		d.activeRgb.Exit <- true
+		d.activeRgb = nil
+	}
+	d.ResetRgb()
+	return 1
 }
 
 // isRgbStatic will return true or false if all devices are set to static RGB mode
@@ -1258,41 +1310,8 @@ func (d *Device) setDeviceColor(resetColor bool) {
 		return
 	}
 	
-	// Are all devices under static mode?
-	// In static mode, we only need to send color once;
-	// there is no need for continuous packet sending.
-	ledEnabledDevices, ledEnabledStaticDevices := 0, 0
-	for _, device := range d.Devices {
-		if device.LedChannels > 0 {
-			ledEnabledDevices++ // device has LED
-			if device.RGB == "static" {
-				ledEnabledStaticDevices++ // led profile is set to static
-			}
-		}
-	}
-
-	if ledEnabledDevices > 0 || ledEnabledStaticDevices > 0 {
-		if ledEnabledDevices == ledEnabledStaticDevices {
-			profile := d.GetRgbProfile("static")
-			if profile == nil {
-				return
-			}
-			profile.StartColor.Brightness = rgb.GetBrightnessValueFloat(*d.DeviceProfile.BrightnessSlider)
-			profileColor := rgb.ModifyBrightness(profile.StartColor)
-			buff := make(map[byte][]byte)
-			for _, k := range keys {
-				for i := 0; i < int(d.Devices[k].LedChannels); i++ {
-					buff[d.Devices[k].PortId] = append(buff[d.Devices[k].PortId], []byte{
-						byte(profileColor.Red),
-						byte(profileColor.Green),
-						byte(profileColor.Blue),
-					}...)
-				}
-			}
-			d.writeColor(buff)
-			return
-		}
-	}
+	// Static goes through the repaint loop as well. A single write is not
+	// reliable on CorsairLightingProtocol (Arduino) boards, repainting self-corrects.
 	go func() {
 		startTime := time.Now()
 		d.activeRgb = rgb.Exit()
@@ -1479,7 +1498,9 @@ func (d *Device) setAutoRefresh() {
 					return
 				}
 				d.setTemperatures()
+				d.writeMutex.Lock()
 				_, err := d.transfer(cmdSave, dataFlush, false)
+				d.writeMutex.Unlock()
 				if err != nil {
 					return
 				}
@@ -1496,6 +1517,10 @@ func (d *Device) writeColor(buffer map[byte][]byte) {
 	if d.Exit {
 		return
 	}
+
+	// Keep multi-packet color writes from interleaving with the refresh ticker
+	d.writeMutex.Lock()
+	defer d.writeMutex.Unlock()
 
 	for portId, data := range buffer {
 		packetLen := len(data) / 3

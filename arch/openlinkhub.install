@@ -1,0 +1,22 @@
+# Unlike the CachyOS package, never leave the service disabled after an upgrade
+
+post_install() {
+	udevadm control --reload-rules
+	systemctl daemon-reload
+	systemctl enable --now openlinkhub.service
+}
+
+post_upgrade() {
+	udevadm control --reload-rules
+	systemctl daemon-reload
+	systemctl try-restart openlinkhub.service
+}
+
+pre_remove() {
+	systemctl disable --now openlinkhub.service
+}
+
+post_remove() {
+	udevadm control --reload-rules
+	systemctl daemon-reload
+}

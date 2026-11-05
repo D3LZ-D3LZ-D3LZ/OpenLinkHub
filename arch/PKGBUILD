@@ -1,0 +1,47 @@
+# Maintainer: Delwyn Julien <delwyn.julien@nextphaze.com.au>
+# OpenLinkHub with patches for DIY Lighting Node Pro boards running
+# Legion2/CorsairLightingProtocol. Replaces the CachyOS openlinkhub package
+# so a system update cannot swap the binary back to stock.
+
+pkgname=openlinkhub-diy
+_pkgname=openlinkhub
+pkgver=0.9.3.r0
+pkgrel=1
+pkgdesc="Open source interface for Corsair devices (patched for DIY Lighting Node Pro boards)"
+arch=('x86_64')
+url="https://github.com/D3LZ-D3LZ-D3LZ/OpenLinkHub"
+license=('GPL-3.0-or-later')
+depends=('systemd' 'i2c-tools' 'libpipewire')
+makedepends=('git' 'go')
+provides=("$_pkgname")
+conflicts=("$_pkgname")
+install=openlinkhub.install
+source=("$_pkgname::git+$url.git#branch=diy-lnp"
+        openlinkhub.service
+        openlinkhub.sysusers
+        openlinkhub.tmpfiles)
+sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP')
+
+pkgver() {
+  cd "$_pkgname"
+  git describe --long --tags --match '[0-9]*' | sed 's/-\([0-9]*\)-g[0-9a-f]*$/.r\1/'
+}
+
+build() {
+  cd "$_pkgname"
+  export CGO_CFLAGS_ALLOW='-fno-strict-overflow'
+  export GOFLAGS="-buildmode=pie -trimpath -mod=readonly -modcacherw"
+  go build -o openlinkhub .
+}
+
+package() {
+  cd "$_pkgname"
+  install -Dm755 openlinkhub "$pkgdir/usr/bin/openlinkhub"
+  install -Dm644 99-openlinkhub.rules "$pkgdir/etc/udev/rules.d/99-openlinkhub.rules"
+  install -Dm644 "$srcdir/openlinkhub.service" "$pkgdir/usr/lib/systemd/system/openlinkhub.service"
+  install -Dm644 "$srcdir/openlinkhub.sysusers" "$pkgdir/usr/lib/sysusers.d/openlinkhub.conf"
+  install -Dm644 "$srcdir/openlinkhub.tmpfiles" "$pkgdir/usr/lib/tmpfiles.d/openlinkhub.conf"
+
+  install -dm755 "$pkgdir/var/lib/openlinkhub"
+  cp -r api database static web "$pkgdir/var/lib/openlinkhub/"
+}

@@ -192,6 +192,7 @@ func Init(vendorId, productId uint16, serial, _ string) *common.Device {
 			3: "100 %",
 		},
 		timer:           &time.Ticker{},
+		writeErrors:     make(map[byte]int),
 		autoRefreshChan: make(chan struct{}),
 		State:           make(map[byte]bool, 2),
 		HardwareModes: map[int]string{
@@ -1627,9 +1628,6 @@ func (d *Device) transfer(endpoint byte, buffer []byte, read bool) ([]byte, erro
 
 	if _, err := d.dev.Write(bufferW); err != nil {
 		// Log the first failure per endpoint only, some boards reject writes continuously
-		if d.writeErrors == nil {
-			d.writeErrors = make(map[byte]int)
-		}
 		if d.writeErrors[endpoint] == 0 {
 			logger.Log(logger.Fields{"error": err, "serial": d.Serial, "endpoint": endpoint}).Error("Unable to write to a device")
 		}

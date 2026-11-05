@@ -121,6 +121,8 @@ var (
 	maxBufferSizePerRequest = 50
 	maximumLedAmount        = 204
 	customLedDeviceIndex    = 999
+	writeRetries            = 10
+	writeRetryDelay         = time.Millisecond
 	deviceUpdateDelay       = 40
 	rgbProfileUpgrade       = []string{"gradient", "pastelrainbow", "pastelspiralrainbow"}
 	rgbModes                = []string{
@@ -1626,7 +1628,14 @@ func (d *Device) transfer(endpoint byte, buffer []byte, read bool) ([]byte, erro
 
 	bufferR := make([]byte, readBufferSize)
 
-	if _, err := d.dev.Write(bufferW); err != nil {
+	// CorsairLightingProtocol boards stall (EPIPE) a new report while the previous
+	// one is still being processed. Give the board a moment and retry.
+	_, err := d.dev.Write(bufferW)
+	for i := 0; err != nil && strings.Contains(err.Error(), "Broken pipe") && i < writeRetries; i++ {
+		time.Sleep(writeRetryDelay)
+		_, err = d.dev.Write(bufferW)
+	}
+	if err != nil {
 		// Log the first failure per endpoint only, some boards reject writes continuously
 		if d.writeErrors[endpoint] == 0 {
 			logger.Log(logger.Fields{"error": err, "serial": d.Serial, "endpoint": endpoint}).Error("Unable to write to a device")

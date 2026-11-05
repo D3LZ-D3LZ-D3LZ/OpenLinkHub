@@ -95,6 +95,7 @@ type Device struct {
 	Exit                    bool
 	mutex                   sync.Mutex
 	writeMutex              sync.Mutex
+	writeErrors             map[byte]int
 	autoRefreshChan         chan struct{}
 	timer                   *time.Ticker
 	State                   map[byte]bool
@@ -120,7 +121,7 @@ var (
 	maxBufferSizePerRequest = 50
 	maximumLedAmount        = 204
 	customLedDeviceIndex    = 999
-	deviceUpdateDelay       = 5
+	deviceUpdateDelay       = 40
 	rgbProfileUpgrade       = []string{"gradient", "pastelrainbow", "pastelspiralrainbow"}
 	rgbModes                = []string{
 		"circle",
@@ -1565,36 +1566,24 @@ func (d *Device) writeColor(buffer map[byte][]byte) {
 			chunkPacket[2] = byte(len(chunksR[z]))
 			chunkPacket[3] = 0x00
 			copy(chunkPacket[4:], chunksR[z])
-			_, err = d.transfer(cmdWriteColor, chunkPacket, false)
-			if err != nil {
-				logger.Log(logger.Fields{"error": err}).Error("Unable to write color to device")
-			}
+			_, _ = d.transfer(cmdWriteColor, chunkPacket, false) // errors are logged in transfer
 
 			chunkPacket[0] = portId
 			chunkPacket[1] = byte(z * maxBufferSizePerRequest)
 			chunkPacket[2] = byte(len(chunksG[z]))
 			chunkPacket[3] = 0x01
 			copy(chunkPacket[4:], chunksG[z])
-			_, err = d.transfer(cmdWriteColor, chunkPacket, false)
-			if err != nil {
-				logger.Log(logger.Fields{"error": err}).Error("Unable to write color to device")
-			}
+			_, _ = d.transfer(cmdWriteColor, chunkPacket, false) // errors are logged in transfer
 
 			chunkPacket[0] = portId
 			chunkPacket[1] = byte(z * maxBufferSizePerRequest)
 			chunkPacket[2] = byte(len(chunksB[z]))
 			chunkPacket[3] = 0x02
 			copy(chunkPacket[4:], chunksB[z])
-			_, err = d.transfer(cmdWriteColor, chunkPacket, false)
-			if err != nil {
-				logger.Log(logger.Fields{"error": err}).Error("Unable to write color to device")
-			}
+			_, _ = d.transfer(cmdWriteColor, chunkPacket, false) // errors are logged in transfer
 		}
 
-		_, err = d.transfer(cmdSave, dataFlush, false)
-		if err != nil {
-			logger.Log(logger.Fields{"error": err}).Error("Unable to write blue color to device")
-		}
+		_, _ = d.transfer(cmdSave, dataFlush, false) // errors are logged in transfer
 	}
 }
 
@@ -1637,9 +1626,17 @@ func (d *Device) transfer(endpoint byte, buffer []byte, read bool) ([]byte, erro
 	bufferR := make([]byte, readBufferSize)
 
 	if _, err := d.dev.Write(bufferW); err != nil {
-		logger.Log(logger.Fields{"error": err, "serial": d.Serial}).Error("Unable to write to a device")
+		// Log the first failure per endpoint only, some boards reject writes continuously
+		if d.writeErrors == nil {
+			d.writeErrors = make(map[byte]int)
+		}
+		if d.writeErrors[endpoint] == 0 {
+			logger.Log(logger.Fields{"error": err, "serial": d.Serial, "endpoint": endpoint}).Error("Unable to write to a device")
+		}
+		d.writeErrors[endpoint]++
 		return bufferR, err
 	}
+	d.writeErrors[endpoint] = 0
 
 	if read {
 		if _, err := d.dev.Read(bufferR); err != nil {

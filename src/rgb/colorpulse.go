@@ -16,7 +16,9 @@ func (r *ActiveRGB) Colorpulse(startTime *time.Time) {
 		elapsed = 0             // Reset elapsed time
 		progress = 0            // Reset progress
 	}
-	color := interpolateColors(r.RGBStartColor, r.RGBEndColor, progress, r.RGBBrightness)
+	// Fade to the end color and back, so the pulse breathes instead of jumping back to the start color
+	t := 1 - math.Abs(2*progress-1)
+	color := interpolateColors(r.RGBStartColor, r.RGBEndColor, t, r.RGBBrightness)
 
 	// Update LED channels
 	for j := 0; j < r.LightChannels; j++ {

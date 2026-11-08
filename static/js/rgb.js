@@ -171,6 +171,7 @@ $(document).ready(function () {
                                             case "cpu-temperature":
                                             case "gpu-temperature":
                                             case "liquid-temperature":
+                                            case "dimm-temperature":
                                             case "static":
                                             case "storm":
                                             case "off": {
@@ -247,7 +248,7 @@ $(document).ready(function () {
                                             colorHtmlElement += `</div>`;
                                             size = 1000;
                                         } else {
-                                            if (profile === "cpu-temperature" || profile === "gpu-temperature" ||profile === "liquid-temperature") {
+                                            if (profile === "cpu-temperature" || profile === "gpu-temperature" ||profile === "liquid-temperature" || profile === "dimm-temperature") {
                                                 colorHtmlElement = `
                                                     <div class="settings-row rgb-editor">
                                                         <span class="settings-label text-ellipsis">${i18n.t('txtStartColor')}</span>

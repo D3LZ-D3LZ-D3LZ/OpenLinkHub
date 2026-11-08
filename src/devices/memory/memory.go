@@ -156,7 +156,7 @@ var (
 	colorAddresses        = []byte{0x58, 0x59, 0x5a, 0x5b, 0x5c, 0x5d, 0x5e, 0x5f} // DDR4
 	temperatureAddresses  = []string{"0018", "0019", "001a", "001b", "001c", "001d", "001e", "001f"}
 	basePath              = "/sys/bus/i2c/drivers"
-	rgbProfileUpgrade     = []string{"led", "nebula", "marquee", "spiralrainbow", "gradient", "pastelrainbow", "pastelspiralrainbow"}
+	rgbProfileUpgrade     = []string{"led", "nebula", "marquee", "spiralrainbow", "gradient", "pastelrainbow", "pastelspiralrainbow", "dimm-temperature"}
 	rgbModes              = []string{
 		"circle",
 		"circleshift",
@@ -164,6 +164,7 @@ var (
 		"colorshift",
 		"colorwarp",
 		"cpu-temperature",
+		"dimm-temperature",
 		"flickering",
 		"gpu-temperature",
 		"gradient",
@@ -426,6 +427,14 @@ func (d *Device) upgradeRgbProfile(path string, profiles []string) {
 			save = true
 			logger.Log(logger.Fields{"profile": profile}).Info("Upgrading RGB profile")
 			template := rgb.GetRgbProfile(profile)
+			if template == nil && profile == "dimm-temperature" {
+				// No global template, start from the CPU temperature colors
+				if cpu := rgb.GetRgbProfile("cpu-temperature"); cpu != nil {
+					dimm := *cpu
+					dimm.ProfileName = "DIMM Temperature"
+					template = &dimm
+				}
+			}
 			if template == nil {
 				d.Rgb.Profiles[profile] = rgb.Profile{}
 			} else {
@@ -1426,6 +1435,14 @@ func (d *Device) setDeviceColor() {
 							r.MinTemp = profile.MinTemp
 							r.MaxTemp = profile.MaxTemp
 							r.Temperature(float64(d.GpuTemp))
+							buff = r.Output
+						}
+					case "dimm-temperature":
+						{
+							// Each stick follows its own temperature sensor
+							r.MinTemp = profile.MinTemp
+							r.MaxTemp = profile.MaxTemp
+							r.Temperature(float64(d.Devices[k].Temperature))
 							buff = r.Output
 						}
 					case "colorpulse":
